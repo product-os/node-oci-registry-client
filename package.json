@@ -1,6 +1,6 @@
 {
   "name": "oci-registry-client",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Node client for OCI compatible registries",
   "homepage": "https://github.com/product-os/node-oci-registry-client#readme",
   "main": "build/index.js",
@@ -37,7 +37,7 @@
     "typescript": "^4.7.4"
   },
   "versionist": {
-    "publishedAt": "2022-07-20T21:31:17.871Z"
+    "publishedAt": "2022-08-13T11:42:25.319Z"
   },
   "dependencies": {
     "@types/node": "^16.11.48",
