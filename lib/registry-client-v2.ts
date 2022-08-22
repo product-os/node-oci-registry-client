@@ -5,7 +5,6 @@
  */
 
 import * as crypto from 'crypto';
-import { TransformStream } from 'node:stream/web';
 import { Headers } from 'node-fetch';
 import {
 	parseRepo,
@@ -27,6 +26,8 @@ import {
 import { DockerJsonClient, DockerResponse } from './docker-json-client';
 import { Parse_WWW_Authenticate } from './www-authenticate';
 import * as e from './errors';
+import { Readable } from 'stream';
+import { BadDigestError, TooManyRedirectsError, UploadError } from './errors';
 
 /*
  * Copyright 2017 Joyent, Inc.
@@ -249,7 +250,7 @@ function _parseDockerContentDigest(dcd: string) {
 				case 'sha256':
 					return crypto.createHash('sha256');
 				default:
-					throw new e.BadDigestError(
+					throw new BadDigestError(
 						`Unsupported hash algorithm ${this.algorithm}`,
 					);
 			}
@@ -448,6 +449,7 @@ export class RegistryClientV2 {
 		const chalHeader = res.headers.get('www-authenticate');
 		if (!chalHeader) {
 			throw await res.dockerThrowable(
+				res.status,
 				'missing WWW-Authenticate header from "GET /v2/" (see ' +
 					'https://docs.docker.com/registry/spec/api/#api-version-check)',
 			);
@@ -528,18 +530,20 @@ export class RegistryClientV2 {
 			method: 'GET',
 			path: tokenUrl,
 			headers,
-			expectStatus: [200, 401],
+			expectStatus: [200, 401, 403],
 		});
 		if (resp.status === 401) {
-			// Convert *all* 401 errors to use a generic error constructor
-			// with a simple error message.
 			const errMsg = _getRegistryErrorMessage(await resp.dockerJson());
-			throw await resp.dockerThrowable('Registry auth failed: ' + errMsg);
+			throw await resp.dockerThrowable(
+				resp.status,
+				'Registry auth failed: ' + errMsg,
+			);
 		}
 		const body = await resp.dockerJson();
 		if (typeof body.token !== 'string') {
 			console.error('TODO: auth resp:', body);
 			throw await resp.dockerThrowable(
+				resp.status,
 				'authorization ' + 'server did not include a token in the response',
 			);
 		}
@@ -666,6 +670,7 @@ export class RegistryClientV2 {
 		if (resp.status === 401) {
 			const errMsg = _getRegistryErrorMessage(await resp.dockerJson());
 			throw await resp.dockerThrowable(
+				resp.status,
 				`Manifest ${JSON.stringify(opts.ref)} Not Found: ${errMsg}`,
 			);
 		}
@@ -727,14 +732,16 @@ export class RegistryClientV2 {
 				path: req.path,
 				headers: req.headers,
 				redirect: 'manual',
-				expectStatus: [200, 302, 307],
+				expectStatus: [200, 302, 303, 307],
 			});
 			ress.push(resp);
 
 			if (!followRedirects) {
 				return ress;
 			}
-			if (!(resp.status === 302 || resp.status === 307)) {
+			if (
+				!(resp.status === 302 || resp.status === 303 || resp.status === 307)
+			) {
 				return ress;
 			}
 
@@ -744,16 +751,16 @@ export class RegistryClientV2 {
 			}
 
 			const loc = new URL(location, new URL(req.path, this._url));
-			// this.log.trace({numRedirs: numRedirs, loc: loc}, 'got redir response');
+
 			req = {
 				path: loc.toString(),
 				headers: new Headers(),
 			};
 
-			// await resp.body?.cancel();
+			(resp.body as Readable)?.destroy();
 		}
 
-		throw new e.TooManyRedirectsError(
+		throw new TooManyRedirectsError(
 			`maximum number of redirects (${maxRedirects}) hit`,
 		);
 	}
@@ -787,21 +794,13 @@ export class RegistryClientV2 {
 	async headBlob(opts: { digest: string }) {
 		const resp = await this._headOrGetBlob('HEAD', opts.digest);
 		// consume the final body - since HEADs don't have meaningful bodies
-		// await resp.slice(-1)[0].body?.cancel();
+		(resp.slice(-1)[0].body as Readable).destroy();
 		return resp;
 	}
 
 	/**
-	 * Get a ReadableStream to the given blob.
+	 * Get a stream to the given blob.
 	 * <https://docs.docker.com/registry/spec/api/#get-blob>
-	 *
-	 * @return
-	 *      The `stream` is a W3C ReadableStream.
-	 *      `ress` (plural of 'res') is an array of responses
-	 *      after following redirects. The latest response is where `stream`
-	 *      came from. The full set of responses are returned mainly because
-	 *      headers on both the first, e.g. 'Docker-Content-Digest', and last,
-	 *      e.g. 'Content-Length', might be interesting.
 	 */
 	async createBlobReadStream(opts: { digest: string }) {
 		const ress = await this._headOrGetBlob('GET', opts.digest);
@@ -811,12 +810,12 @@ export class RegistryClientV2 {
 		if (dcdHeader) {
 			const dcdInfo = _parseDockerContentDigest(dcdHeader);
 			if (dcdInfo.raw !== opts.digest) {
-				throw new e.BadDigestError(
+				throw new BadDigestError(
 					`Docker-Content-Digest header, ${dcdInfo.raw}, does not match ` +
 						`given digest, ${opts.digest}`,
 				);
 			}
-			// TODO: restore when moving to node 18 LTS
+			// TODO: node streams solution for pipeThrough
 			// stream = stream.pipeThrough(dcdInfo.validationStream);
 		} else {
 			// stream.log.debug({headers: ress[0].headers},
@@ -848,23 +847,18 @@ export class RegistryClientV2 {
 				opts.schemaVersion ?? 1
 			}+json`;
 
-		const response = await this._api
-			.request({
-				method: 'PUT',
-				path: `/v2/${encodeURI(this.repo.remoteName)}/manifests/${opts.ref}`,
-				headers: _setAuthHeaderFromAuthInfo(
-					new Headers({
-						'content-type': mediaType,
-					}),
-					this._authInfo ?? null,
-				),
-				body: opts.manifestData,
-				expectStatus: [201],
-			})
-			.catch(() =>
-				Promise.reject(new e.UploadError('Manifest upload failed.')),
-			);
-
+		const response = await this._api.request({
+			method: 'PUT',
+			path: `/v2/${encodeURI(this.repo.remoteName)}/manifests/${opts.ref}`,
+			headers: _setAuthHeaderFromAuthInfo(
+				new Headers({
+					'content-type': mediaType,
+				}),
+				this._authInfo ?? null,
+			),
+			body: opts.manifestData,
+			expectStatus: [201],
+		});
 		const digest = response.headers.get('docker-content-digest');
 		const location = response.headers.get('location');
 		return { digest, location };
@@ -903,7 +897,7 @@ export class RegistryClientV2 {
 			.catch(() => Promise.reject(new e.UploadError('Blob upload rejected.')));
 		const uploadUrl = sessionResponse.headers.get('location');
 		if (!uploadUrl) {
-			throw new e.UploadError('No registry upload location header returned');
+			throw new UploadError('No registry upload location header returned');
 		}
 
 		const destinationUrl = new URL(
@@ -911,20 +905,18 @@ export class RegistryClientV2 {
 			new URL(startUploadPath, this._url),
 		);
 		destinationUrl.searchParams.append('digest', opts.digest);
-		await this._api
-			.request({
-				method: 'PUT',
-				path: destinationUrl.toString(),
-				headers: _setAuthHeaderFromAuthInfo(
-					new Headers({
-						'content-length': `${opts.contentLength}`,
-						'content-type': opts.contentType || 'application/octet-stream',
-					}),
-					this._authInfo ?? null,
-				),
-				body: opts.stream,
-				expectStatus: [201],
-			})
-			.catch(() => Promise.reject(new e.UploadError('Blob upload failed.')));
+		return await this._api.request({
+			method: 'PUT',
+			path: destinationUrl.toString(),
+			headers: _setAuthHeaderFromAuthInfo(
+				new Headers({
+					'content-length': `${opts.contentLength}`,
+					'content-type': opts.contentType || 'application/octet-stream',
+				}),
+				this._authInfo ?? null,
+			),
+			body: opts.stream,
+			expectStatus: [201],
+		});
 	}
 }

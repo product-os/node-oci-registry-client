@@ -10,7 +10,7 @@ import fetch, {
 	Response,
 	RequestRedirect,
 } from 'node-fetch';
-import { HttpError } from './errors';
+import { getHttpError, HttpError } from './errors';
 import { DockerResponse as DockerResponseInterface } from './types';
 
 // --- API
@@ -70,6 +70,7 @@ export class DockerJsonClient {
 		const expectStatus = opts.expectStatus ?? [200];
 		if (!expectStatus.includes(rawResp.status)) {
 			throw await resp.dockerThrowable(
+				rawResp.status,
 				`Unexpected HTTP ${rawResp.status} from ${opts.path}`,
 			);
 		}
@@ -142,7 +143,10 @@ export class DockerResponse
 		return errObj.filter((x) => typeof x.message === 'string');
 	}
 
-	async dockerThrowable(baseMsg: string): Promise<HttpError> {
+	async dockerThrowable(
+		statusCode: number,
+		baseMsg: string,
+	): Promise<HttpError> {
 		// no point trying to parse HTML
 		if (this.headers.get('content-type')?.startsWith('text/html')) {
 			await this.arrayBuffer();
@@ -157,15 +161,17 @@ export class DockerResponse
 					errors.push({ message: text.slice(0, 512) });
 				}
 			}
-			const errorTexts = errors.map(
-				(x) =>
-					'    ' +
-					[x.code, x.message, x.detail ? JSON.stringify(x.detail) : '']
-						// .filter((x) => x)
-						.join(': '),
+			const errorTexts = errors.map((x) =>
+				[x.code, x.message, x.detail ? JSON.stringify(x.detail) : '']
+					.filter((y) => y)
+					.join(': '),
 			);
-
-			return new HttpError(this, errors, [baseMsg, ...errorTexts].join('\n'));
+			const error = new (getHttpError(statusCode))(
+				this,
+				errors,
+				[baseMsg, ...errorTexts].join('\n'),
+			);
+			return error;
 		} catch (err: any) {
 			return new HttpError(
 				this,
@@ -180,32 +186,32 @@ export class DockerResponse
 			throw new Error(`No body to stream`);
 		}
 
-		let stream = this.body;
+		const stream = this.body;
 
 		// Content-MD5 check.
-		const contentMd5 = this.headers.get('content-md5');
-		if (contentMd5 && this.status !== 206) {
-			const hash = crypto.createHash('md5');
-			// @ts-expect-error TS2339: Property 'pipeThrough' does not exist on type 'ReadableStream'.
-			stream = stream.pipeThrough(
-				new TransformStream({
-					transform(chunk, controller) {
-						hash.update(chunk);
-						controller.enqueue(chunk);
-					},
-					flush(controller) {
-						const digest = hash.digest('base64');
-						if (contentMd5 !== digest) {
-							controller.error(
-								new Error(
-									`BadDigestError: Content-MD5 (${contentMd5} vs ${digest})`,
-								),
-							);
-						}
-					},
-				}),
-			);
-		}
+		// const contentMd5 = this.headers.get('content-md5');
+		// if (contentMd5 && this.status !== 206) {
+		// 	const hash = crypto.createHash('md5');
+		// 	// @ts-expect-error TS2339: Property 'pipeThrough' does not exist on type 'ReadableStream'.
+		// 	stream = stream.pipeThrough(
+		// 		new TransformStream({
+		// 			transform(chunk, controller) {
+		// 				hash.update(chunk);
+		// 				controller.enqueue(chunk);
+		// 			},
+		// 			flush(controller) {
+		// 				const digest = hash.digest('base64');
+		// 				if (contentMd5 !== digest) {
+		// 					controller.error(
+		// 						new Error(
+		// 							`BadDigestError: Content-MD5 (${contentMd5} vs ${digest})`,
+		// 						),
+		// 					);
+		// 				}
+		// 			},
+		// 		}),
+		// 	);
+		// }
 
 		return stream;
 	}

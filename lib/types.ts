@@ -38,6 +38,9 @@ export interface TagList {
 	>;
 }
 
+/**
+ * See: https://docs.docker.com/registry/spec/manifest-v2-2/
+ */
 export type Manifest =
 	| ManifestV2
 	| ManifestV2List
@@ -139,7 +142,7 @@ export interface DockerResponse extends Response {
 	dockerStream(): NodeJS.ReadableStream;
 
 	dockerErrors(): Promise<RegistryError[]>;
-	dockerThrowable(baseMsg: string): Promise<Error>;
+	dockerThrowable(statusCode: number, baseMsg: string): Promise<Error>;
 }
 
 export interface RegistryError {
