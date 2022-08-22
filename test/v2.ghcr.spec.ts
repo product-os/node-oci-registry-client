@@ -227,7 +227,7 @@ describe('GitHub container registry', function () {
 			const client = new RegistryClientV2({ repo, username, password });
 			await assertThrowsHttp(async () => {
 				await client.createBlobReadStream({ digest: 'cafebabe' });
-			}, 303);
+			}, 404);
 		},
 	);
 });

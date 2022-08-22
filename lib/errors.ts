@@ -33,6 +33,35 @@ export class HttpError extends ApiError {
 		super(message);
 	}
 }
+
+export class UnauthorizedError extends HttpError {
+	readonly name = 'UnauthorizedError';
+	readonly statusCode = 401;
+}
+
+export class ForbiddenError extends HttpError {
+	readonly name = 'DeniedError';
+	readonly statusCode = 403;
+}
+
+export class NotFoundError extends HttpError {
+	readonly name = 'NotFoundError';
+	readonly statusCode = 404;
+}
+
+export function getHttpError(statusCode: number): typeof HttpError {
+	switch (statusCode) {
+		case 401:
+			return UnauthorizedError;
+		case 403:
+			return ForbiddenError;
+		case 404:
+			return NotFoundError;
+		default:
+			return HttpError;
+	}
+}
+
 export class BadDigestError extends ApiError {
 	readonly name = 'BadDigestError';
 }
@@ -59,11 +88,6 @@ export class DownloadError extends ApiError {
 export class UploadError extends ApiError {
 	readonly name = 'UploadError';
 }
-
-// export class UnauthorizedError extends HttpError {
-//     readonly name = 'UnauthorizedError';
-//     readonly statusCode = 401;
-// }
 
 export class TooManyRedirectsError extends ApiError {
 	readonly name = 'TooManyRedirectsError';

@@ -18,8 +18,8 @@
   "scripts": {
     "clean": "rimraf build",
     "build": "npm run clean && tsc",
-    "lint": "balena-lint --typescript lib test",
-    "lint-fix": "balena-lint --typescript --fix lib test",
+    "lint": "balena-lint --typescript lib test examples",
+    "lint-fix": "balena-lint --typescript --fix lib test examples",
     "test": "npm run build && npm run test:unit",
     "test:unit": "jest test --passWithNoTests",
     "prepack": "npm run build"
@@ -40,7 +40,7 @@
     "publishedAt": "2022-08-13T11:42:25.319Z"
   },
   "dependencies": {
-    "@types/node": "^16.11.48",
+    "minimist": "^1.2.6",
     "node-fetch": "^2.6.7"
   }
 }
